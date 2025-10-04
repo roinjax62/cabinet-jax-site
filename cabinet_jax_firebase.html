@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Cabinet Jax — Gestion (Firebase)</title>
+
+<!--
+Cabinet Jax - Firebase-ready (HTML autonome)
+--------------------------------------------
+INSTRUCTIONS RAPIDES:
+1) Remplacer la configuration Firebase :
+   Ce fichier contient déjà votre firebaseConfig (fourni). Si vous souhaitez utiliser un autre projet,
+   remplacez la constante `firebaseConfig` dans le script plus bas par la config de votre projet Firebase.
+
+2) Activer Authentication & Firestore :
+   - Console Firebase -> Authentication -> Sign-in method -> activer "Email/Password".
+   - Console Firebase -> Firestore Database -> créer une base (mode test ou règles personnalisées).
+   - Exemple de règles (adapter en production) est indiqué dans le code JS.
+
+3) Hébergement & Google Sites :
+   - Hébergez ce fichier (GitHub Pages, Netlify recommandé).
+   - Dans Google Sites : Insérer > Intégrer > URL > collez l'URL publique.
+   - Pour que la persistance fonctionne, l'iframe doit autoriser same-origin (sandbox="allow-scripts allow-same-origin allow-forms").
+   - Exemple d'iframe :
+     <iframe src="https://tonpseudo.github.io/cabinet-jax-firebase.html" width="100%" height="800" style="border:none;" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+
+4) Remarques importantes de sécurité :
+   - Le prototype mappe le "username" vers un email interne username@jax.local pour Firebase Auth.
+     Si vous voulez de vrais emails pour reset de mot de passe, créez les comptes avec de vrais emails.
+   - Suppression d'un utilisateur Auth via client n'est pas possible proprement sans Admin SDK. On supprime la doc Firestore : supprimez l'Auth user via la console Firebase ou Admin API.
+   - Sécurisez Firestore avec des règles adaptées avant mise en production.
+
+5) Mode fallback :
+   - Si Firebase est indisponible, l'app peut utiliser localStorage (prototype). Les mots de passe sont stockés en clair en localStorage : NE PAS UTILISER EN PROD.
+
+------------------------------------------------
+Ce fichier contient tout (HTML + CSS + JS inline). Ne nécessite pas de build.
+-->
+
+<style>
+  :root{--gold:#C69C3A;--black:#000;--muted:#666;--bg:#fff;--card:#fafafa}
+  *{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:#f6f6f7;color:#111}
+  header{background:var(--black);color:#fff;padding:16px;display:flex;align-items:center;gap:12px}
+  .logo{display:flex;align-items:center;gap:10px;font-weight:700}
+  .balance{background:var(--gold);color:var(--black);padding:6px 10px;border-radius:8px}
+  .banner{padding:8px 16px;background:linear-gradient(90deg,rgba(198,156,58,0.08),transparent);color:var(--muted)}
+  main{max-width:1200px;margin:18px auto;padding:12px}
+  .card{background:var(--card);padding:12px;border-radius:10px;box-shadow:0 6px 16px rgba(0,0,0,0.06);margin-bottom:12px}
+  form{display:flex;flex-direction:column;gap:8px}
+  input,select,textarea,button{font-size:14px;padding:10px;border-radius:8px;border:1px solid #e6e6e6}
+  button{background:var(--gold);border:none;color:var(--black);cursor:pointer;font-weight:700}
+  .muted{color:var(--muted)}
+  .hidden{display:none}
+  .table{width:100%;border-collapse:collapse}
+  .table th,.table td{padding:8px;border-bottom:1px solid #eee;text-align:left}
+  .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}
+  .tabs{display:flex;gap:6px}
+  .tab{padding:8px 12px;border-radius:8px;border:1px solid transparent;cursor:pointer}
+  .tab.active{background:var(--black);color:#fff}
+  .toast{position:fixed;right:18px;bottom:18px;background:#222;color:#fff;padding:10px 12px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,0.2)}
+  @media(max-width:800px){ .topbar{flex-direction:column;align-items:flex-start} }
+</style>
+
+<!-- PapaParse CDN pour export CSV -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+</head>
+<body>
+  <header>
+    <div class="logo"><div class="balance">⚖︎</div><div>Cabinet Jax <div class="muted" style="font-weight:400;font-size:12px">Gestion comptes & commis</div></div></div>
+    <div style="margin-left:auto;color:#fff" id="hdr-user">Non connecté</div>
+  </header>
+  <div class="banner card">Mode Firebase activé — identifiants via <strong>username</strong> (mapping interne vers email)</div>
+
+  <main>
+    <!-- LOGIN -->
+    <section id="view-login" class="card">
+      <h2>Se connecter</h2>
+      <form id="form-login">
+        <input id="login-username" placeholder="Username" required />
+        <input id="login-password" type="password" placeholder="Mot de passe" required />
+        <div style="display:flex;gap:8px;align-items:center">
+          <button type="submit">Se connecter</button>
+          <button id="btn-switch-local" type="button" class="muted">Mode local (test)</button>
+          <div style="margin-left:auto" class="muted small">Le fichier est préconfiguré pour ton Firebase.</div>
+        </div>
+      </form>
+      <div style="margin-top:10px" class="muted small">Si vous n’avez pas encore configuré Firebase, le mode local (bouton) crée un admin local (admin / admin123).</div>
+    </section>
+
+    <!-- DASHBOARD -->
+    <section id="view-dashboard" class="hidden">
+      <div class="card topbar">
+        <div>
+          <div id="dash-welcome" style="font-weight:700"></div>
+          <div id="dash-role" class="muted"></div>
+        </div>
+        <div class="tabs" id="dash-tabs"></div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="btn-logout" class="muted">Se déconnecter</button>
+        </div>
+      </div>
+
+      <!-- Admin panel -->
+      <div id="admin-panel" class="card hidden">
+        <div style="display:grid;grid-template-columns:1fr 360px;gap:12px">
+          <div>
+            <div class="topbar">
+              <div style="display:flex;gap:8px;align-items:center">
+                <div class="muted">Membres</div>
+                <input id="search-users" placeholder="Rechercher..." />
+                <select id="sort-users"><option value="createdAt_desc">Date ↓</option><option value="createdAt_asc">Date ↑</option></select>
+              </div>
+              <div style="display:flex;gap:8px">
+                <button id="btn-create-user">Créer</button>
+              </div>
+            </div>
+
+            <table class="table" id="table-users">
+              <thead><tr><th>Nom</th><th>Username</th><th>Rôle</th><th>Grade</th><th>Créé</th><th>Actions</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div>
+            <div class="card">
+              <h4>Créer / Modifier compte</h4>
+              <form id="form-user">
+                <input id="u-username" placeholder="username" required />
+                <input id="u-password" placeholder="mot de passe (laisser vide si inchangé)" />
+                <input id="u-name" placeholder="Nom complet" required />
+                <select id="u-role"><option value="avocat">Avocat</option><option value="admin">Admin</option></select>
+                <input id="u-grade" placeholder="Grade" />
+                <div style="display:flex;gap:8px;margin-top:8px">
+                  <button type="submit">Sauvegarder</button>
+                  <button id="reset-user" type="button" class="muted">Réinitialiser</button>
+                </div>
+                <input type="hidden" id="u-edit-id" />
+              </form>
+            </div>
+
+            <div class="card" style="margin-top:12px">
+              <h4>Commis (tous)</h4>
+              <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
+                <input id="search-commis-admin" placeholder="Rechercher..." />
+                <select id="sort-commis-admin"><option value="createdAt_desc">Date ↓</option><option value="createdAt_asc">Date ↑</option></select>
+                <button id="btn-export-csv" class="muted">Exporter CSV</button>
+              </div>
+              <table class="table" id="table-commis-admin">
+                <thead><tr><th>Titre</th><th>Matricule</th><th>Avocat</th><th>Créé</th><th>Actions</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Avocat panel -->
+      <div id="avocat-panel" class="card hidden">
+        <div class="topbar">
+          <div><div class="muted">Ma liste — Commis d'office</div></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="search-commis" placeholder="Rechercher..." />
+            <select id="sort-commis"><option value="createdAt_desc">Date ↓</option><option value="createdAt_asc">Date ↑</option></select>
+            <button id="btn-add-commis">+ Ajouter</button>
+          </div>
+        </div>
+
+        <table class="table" id="table-commis">
+          <thead><tr><th>Titre</th><th>Matricule</th><th>Détails</th><th>Créé</th><th>Actions</th></tr></thead>
+          <tbody></tbody>
+        </table>
+
+        <div id="card-commis-form" class="card hidden" style="margin-top:12px">
+          <h4 id="commis-form-title">Ajouter un commis</h4>
+          <form id="form-commis">
+            <input id="c-matricule" placeholder="Matricule du policier (oblig.)" required />
+            <input id="c-titre" placeholder="Titre (oblig.)" required />
+            <textarea id="c-details" placeholder="Détails (optionnels)"></textarea>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button type="submit">Enregistrer</button>
+              <button id="cancel-commis" type="button" class="muted">Annuler</button>
+            </div>
+            <input type="hidden" id="c-edit-id" />
+          </form>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+
+<script>
+/* ============================
+   CONFIGURATION (INSÉRÉE) - NE PAS MODIFIER SANS SAVOIR
+   ============================ */
+/* Firebase config fourni par l'utilisateur */
+const firebaseConfig = {
+  apiKey: "AIzaSyAM44e6ymkPoNwNI4TE3NQ8EWHeDFtrmYE",
+  authDomain: "gestion-cabinet-jax.firebaseapp.com",
+  projectId: "gestion-cabinet-jax",
+  storageBucket: "gestion-cabinet-jax.firebasestorage.app",
+  messagingSenderId: "303899582181",
+  appId: "1:303899582181:web:e32e72c0673e51ba687e0c",
+  measurementId: "G-4XW1FF1Y5Z"
+};
+/* Mode: true => utilise Firebase. false => fallback localStorage */
+let useFirebase = true;
+
+/* Globals */
+let auth = null;
+let db = null;
+let currentUser = null;
+let users = [];
+let commis = [];
+
+/* Utils */
+function uid(){ return 'id_'+Math.random().toString(36).slice(2,9); }
+function nowISO(){ return (new Date()).toISOString(); }
+function tsReadable(iso){ try{return new Date(iso).toLocaleString('fr-FR');}catch(e){return iso;} }
+function showToast(msg, t=3000){ const el=document.getElementById('toast'); el.textContent=msg; el.classList.remove('hidden'); setTimeout(()=>el.classList.add('hidden'), t); }
+
+/* Load Firebase compat SDKs dynamically then initialize */
+(function init(){
+  if(!firebaseConfig) { useFirebase=false; initLocalData(); renderLogin(); return; }
+  // load compat scripts
+  const s1 = document.createElement('script'); s1.src="https://www.gstatic.com/firebasejs/9.24.0/firebase-app-compat.js";
+  s1.onload = ()=>{ const s2=document.createElement('script'); s2.src="https://www.gstatic.com/firebasejs/9.24.0/firebase-auth-compat.js"; s2.onload = ()=>{ const s3=document.createElement('script'); s3.src="https://www.gstatic.com/firebasejs/9.24.0/firebase-firestore-compat.js"; s3.onload = ()=>{ startFirebase(); }; document.head.appendChild(s3); }; document.head.appendChild(s2); };
+  document.head.appendChild(s1);
+})();
+
+async function startFirebase(){
+  try{
+    firebase.initializeApp(firebaseConfig);
+    auth = firebase.auth();
+    db = firebase.firestore();
+    // Use LOCAL persistence so the session survives browser restarts (if iframe allows same-origin)
+    await auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+    auth.onAuthStateChanged(async (u)=>{
+      if(u){
+        // try to load corresponding user doc from 'users' collection
+        const q = await db.collection('users').where('uid','==',u.uid).get();
+        if(!q.empty){ currentUser = q.docs[0].data(); }
+        else {
+          // Create a minimal user doc if missing (default role = avocat)
+          currentUser = { uid:u.uid, username: u.email, name: u.displayName || u.email, role:'avocat', grade:'', createdAt: nowISO() };
+          await db.collection('users').doc(u.uid).set(currentUser);
+        }
+        await loadAllFirebaseData();
+        renderDashboard();
+        showToast('Connecté (Firebase)');
+      } else {
+        currentUser = null;
+        renderLogin();
+      }
+    });
+  }catch(e){ console.error(e); showToast('Erreur init Firebase: '+ e.message); useFirebase=false; initLocalData(); renderLogin(); }
+}
+
+/* Firestore load */
+async function loadAllFirebaseData(){
+  const uSnap = await db.collection('users').get();
+  users = uSnap.docs.map(d=>d.data());
+  const cSnap = await db.collection('commis').get();
+  commis = cSnap.docs.map(d=>d.data());
+}
+
+/* Firebase helpers */
+async function firebaseCreateUser(obj, password){
+  const email = toInternalEmail(obj.username);
+  const created = await auth.createUserWithEmailAndPassword(email, password);
+  const uid = created.user.uid;
+  const doc = { uid, username: obj.username, name: obj.name, role: obj.role, grade: obj.grade || '', createdAt: nowISO() };
+  await db.collection('users').doc(uid).set(doc);
+  return doc;
+}
+async function firebaseUpdateUser(uidVal, patch){ await db.collection('users').doc(uidVal).update(patch); return true; }
+async function firebaseDeleteUser(uidVal){ await db.collection('users').doc(uidVal).delete(); return true; }
+async function firebaseCreateCommis(obj){ const id=uid(); const doc={...obj,id,createdAt:nowISO()}; await db.collection('commis').doc(id).set(doc); return doc; }
+async function firebaseUpdateCommis(id, patch){ await db.collection('commis').doc(id).update(patch); return true; }
+async function firebaseDeleteCommis(id){ await db.collection('commis').doc(id).delete(); return true; }
+
+/* Local fallback */
+function initLocalData(){
+  if(!localStorage.getItem('jax_users')){
+    const seed = [
+      { uid: uid(), username:'admin', name:'Admin Jax', role:'admin', grade:'Directeur', createdAt: nowISO(), password: 'admin123' },
+      { uid: uid(), username:'me', name:'Me Avocat', role:'avocat', grade:'Collaborateur', createdAt: nowISO(), password:'avocat123' }
+    ];
+    localStorage.setItem('jax_users', JSON.stringify(seed));
+  }
+  if(!localStorage.getItem('jax_commis')) localStorage.setItem('jax_commis', JSON.stringify([]));
+  users = JSON.parse(localStorage.getItem('jax_users')||'[]');
+  commis = JSON.parse(localStorage.getItem('jax_commis')||'[]');
+}
+function persistLocalUsers(){ localStorage.setItem('jax_users', JSON.stringify(users)); }
+function persistLocalCommis(){ localStorage.setItem('jax_commis', JSON.stringify(commis)); }
+function localCreateUser(obj,password){ const u={...obj,uid:uid(),createdAt:nowISO(),password:password||''}; users.push(u); persistLocalUsers(); return u; }
+function localUpdateUser(uidVal,patch){ const i=users.findIndex(x=>x.uid===uidVal); if(i>=0){ users[i]={...users[i],...patch}; persistLocalUsers(); return true;} return false; }
+function localDeleteUser(uidVal){ const i=users.findIndex(x=>x.uid===uidVal); if(i>=0){ users.splice(i,1); persistLocalUsers(); return true;} return false; }
+function localCreateCommis(obj){ const c={...obj,id:uid(),createdAt:nowISO()}; commis.push(c); persistLocalCommis(); return c; }
+function localUpdateCommis(id,patch){ const i=commis.findIndex(x=>x.id===id); if(i>=0){ commis[i]={...commis[i],...patch}; persistLocalCommis(); return true;} return false; }
+function localDeleteCommis(id){ const i=commis.findIndex(x=>x.id===id); if(i>=0){ commis.splice(i,1); persistLocalCommis(); return true;} return false; }
+
+/* Username mapping */
+function toInternalEmail(username){
+  if(username.includes('@')) return username;
+  return `${username}@jax.local`;
+}
+
+/* Auth functions */
+async function login(usernameInput,password){
+  if(useFirebase && auth){
+    const email = toInternalEmail(usernameInput.trim());
+    try{ await auth.signInWithEmailAndPassword(email,password); }
+    catch(e){ showToast('Erreur connexion Firebase: ' + e.message); }
+  } else {
+    users = JSON.parse(localStorage.getItem('jax_users')||'[]');
+    const u = users.find(x=>x.username===usernameInput && x.password===password);
+    if(u){ currentUser = {...u}; renderDashboard(); showToast('Connecté (local)'); }
+    else showToast('Identifiants invalides (local)');
+  }
+}
+async function logout(){ if(useFirebase && auth){ await auth.signOut(); currentUser=null; renderLogin(); } else { currentUser=null; renderLogin(); } }
+
+/* Admin actions */
+async function adminSaveUser(e){
+  e.preventDefault();
+  const uidVal = document.getElementById('u-edit-id').value;
+  const obj = { username: document.getElementById('u-username').value.trim(), name: document.getElementById('u-name').value.trim(), role: document.getElementById('u-role').value, grade: document.getElementById('u-grade').value.trim() };
+  const password = document.getElementById('u-password').value;
+  try{
+    if(useFirebase && auth && db){
+      if(!uidVal){
+        if(!password){ showToast('Mot de passe requis pour création'); return; }
+        await firebaseCreateUser(obj,password);
+        await loadAllFirebaseData();
+        showToast('Compte créé (Firebase)');
+      } else {
+        await firebaseUpdateUser(uidVal,obj);
+        await loadAllFirebaseData();
+        showToast('Compte mis à jour (Firestore)');
+        if(password){ showToast('Pour changer le mot de passe d\\'un autre utilisateur : utilisez la console Firebase ou Admin API'); }
+      }
+    } else {
+      if(!uidVal){ localCreateUser(obj,password||''); showToast('Compte créé (local)'); }
+      else { localUpdateUser(uidVal,obj); if(password) localUpdateUser(uidVal,{password}); showToast('Compte mis à jour (local)'); }
+      users = JSON.parse(localStorage.getItem('jax_users')||'[]'); renderUsersTable();
+    }
+    document.getElementById('form-user').reset(); document.getElementById('u-edit-id').value=''; renderUsersTable();
+  }catch(err){ showToast('Erreur: ' + err.message); }
+}
+async function adminDeleteUser(uidVal){
+  try{
+    if(useFirebase && db){ await firebaseDeleteUser(uidVal); await loadAllFirebaseData(); showToast('Document utilisateur supprimé. Supprimez l\\'Auth user via la console si nécessaire.'); }
+    else { localDeleteUser(uidVal); users = JSON.parse(localStorage.getItem('jax_users')||'[]'); showToast('Compte supprimé (local)'); }
+    renderUsersTable();
+  }catch(e){ showToast('Erreur suppression: ' + e.message); }
+}
+async function adminResetPassword(username){
+  const email = toInternalEmail(username);
+  if(useFirebase && auth){
+    try{ await auth.sendPasswordResetEmail(email); showToast('Email de réinitialisation envoyé à ' + email); }
+    catch(e){ showToast('Erreur reset: ' + e.message); }
+  } else {
+    const u = users.find(x=>x.username === username);
+    if(u){ u.password = 'changeme'; persistLocalUsers(); showToast('Mot de passe local réinitialisé à \"changeme\" (mode test)'); }
+    else showToast('Utilisateur introuvable (local)');
+  }
+}
+
+/* Commis actions */
+function openCommisForm(){ document.getElementById('card-commis-form').classList.remove('hidden'); document.getElementById('commis-form-title').textContent='Ajouter un commis'; document.getElementById('form-commis').reset(); document.getElementById('c-edit-id').value=''; }
+async function avocatSaveCommis(e){ e.preventDefault(); const id=document.getElementById('c-edit-id').value; const obj={ matriculePolicier: document.getElementById('c-matricule').value.trim(), titre: document.getElementById('c-titre').value.trim(), details: document.getElementById('c-details').value.trim(), authorUid: currentUser.uid, authorName: currentUser.name }; if(!obj.matriculePolicier || !obj.titre){ showToast('Matricule et titre obligatoires'); return; } try{ if(useFirebase && db){ if(!id){ await firebaseCreateCommis(obj); await loadAllFirebaseData(); showToast('Commis ajouté (Firestore)'); } else { await firebaseUpdateCommis(id,obj); await loadAllFirebaseData(); showToast('Commis mis à jour (Firestore)'); } } else { if(!id) localCreateCommis(obj); else localUpdateCommis(id,obj); commis = JSON.parse(localStorage.getItem('jax_commis')||'[]'); showToast('Commis enregistré (local)'); } document.getElementById('card-commis-form').classList.add('hidden'); renderCommisForAvocat(); renderCommisAdminTable(); }catch(e){ showToast('Erreur save: ' + e.message); } }
+async function avocatDeleteCommis(id){ try{ const c = commis.find(x=>x.id===id); if(!c){ showToast('Introuvable'); return; } if(c.authorUid !== currentUser.uid && currentUser.role !== 'admin'){ showToast('Accès refusé'); return; } if(useFirebase && db){ await firebaseDeleteCommis(id); await loadAllFirebaseData(); } else { localDeleteCommis(id); commis = JSON.parse(localStorage.getItem('jax_commis')||'[]'); } renderCommisForAvocat(); renderCommisAdminTable(); showToast('Commis supprimé'); }catch(e){ showToast('Erreur delete: ' + e.message); } }
+async function adminDeleteCommis(id){ await avocatDeleteCommis(id); }
+
+/* CSV export */
+function exportCommisCSV(){ const rows = commis.map(c=>({ id:c.id, titre:c.titre, matricule:c.matriculePolicier, details:c.details, authorName:c.authorName, createdAt:c.createdAt })); const csv = Papa.unparse(rows); const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='commis_jax_'+new Date().toISOString().slice(0,10)+'.csv'; a.click(); URL.revokeObjectURL(url); showToast('Export CSV généré'); }
+
+/* Load commis for editing */
+function loadCommisToForm(id){ const c = commis.find(x=>x.id===id && x.authorUid===currentUser.uid); if(!c){ showToast('Accès refusé ou introuvable'); return; } openCommisForm(); document.getElementById('c-edit-id').value=c.id; document.getElementById('c-matricule').value=c.matriculePolicier||''; document.getElementById('c-titre').value=c.titre||''; document.getElementById('c-details').value=c.details||''; document.getElementById('commis-form-title').textContent='Éditer un commis'; }
+
+/* UI rendering */
+function renderLogin(){ document.getElementById('view-login').classList.remove('hidden'); document.getElementById('view-dashboard').classList.add('hidden'); document.getElementById('hdr-user').textContent='Non connecté'; }
+function renderDashboard(){ document.getElementById('view-login').classList.add('hidden'); document.getElementById('view-dashboard').classList.remove('hidden'); document.getElementById('hdr-user').textContent=currentUser?`${currentUser.name} (${currentUser.role})`:''; document.getElementById('dash-welcome').textContent=`Bonjour, ${currentUser?currentUser.name:''}`; document.getElementById('dash-role').textContent=currentUser?`${currentUser.role} • Grade: ${currentUser.grade||'--'}`:''; const tabs=document.getElementById('dash-tabs'); tabs.innerHTML=''; if(currentUser.role==='admin'){ addTab(tabs,'Comptes',()=>{ showAdmin(); },true); addTab(tabs,'Commis (tous)',()=>{ showAdminCommis(); },false); } else { addTab(tabs,'Mes commis',()=>{ showAvocat(); },true); } showDashboardForRole(); }
+function addTab(container,label,cb,active=false){ const b=document.createElement('button'); b.className='tab'+(active?' active':''); b.textContent=label; b.onclick=()=>{ Array.from(container.children).forEach(x=>x.classList.remove('active')); b.classList.add('active'); cb(); }; container.appendChild(b); }
+function showDashboardForRole(){ if(currentUser.role==='admin') showAdmin(); else showAvocat(); }
+
+function showAdmin(){ document.getElementById('admin-panel').classList.remove('hidden'); document.getElementById('avocat-panel').classList.add('hidden'); if(useFirebase) loadAllFirebaseData().then(()=>{ renderUsersTable(); renderCommisAdminTable(); }); else { initLocalData(); renderUsersTable(); renderCommisAdminTable(); } }
+function showAdminCommis(){ showAdmin(); }
+function showAvocat(){ document.getElementById('admin-panel').classList.add('hidden'); document.getElementById('avocat-panel').classList.remove('hidden'); document.getElementById('card-commis-form').classList.add('hidden'); if(useFirebase) loadAllFirebaseData().then(()=>renderCommisForAvocat()); else { initLocalData(); renderCommisForAvocat(); } }
+
+function renderUsersTable(){ const tbody=document.querySelector('#table-users tbody'); tbody.innerHTML=''; const q=(document.getElementById('search-users').value||'').toLowerCase(); const sort=document.getElementById('sort-users').value; let list=users.slice(); if(q) list=list.filter(u => (u.name||'').toLowerCase().includes(q) || (u.username||'').toLowerCase().includes(q) || (u.role||'').toLowerCase().includes(q)); list.sort((a,b)=>{ if(sort==='createdAt_desc') return new Date(b.createdAt)-new Date(a.createdAt); if(sort==='createdAt_asc') return new Date(a.createdAt)-new Date(b.createdAt); if(sort==='name_asc') return (a.name||'').localeCompare(b.name||''); if(sort==='name_desc') return (b.name||'').localeCompare(a.name||''); return 0; }); list.forEach(u=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${escapeHtml(u.name||'')}</td><td>${escapeHtml(u.username||'')}</td><td>${escapeHtml(u.role||'')}</td><td>${escapeHtml(u.grade||'')}</td><td><small class="muted">${tsReadable(u.createdAt||'')}</small></td><td><button data-uid="${u.uid}" class="btn-edit">Modifier</button><button data-uid="${u.uid}" class="btn-delete" style="background:#ff4d4f;color:#fff">Supprimer</button><button data-username="${u.username}" class="btn-reset small muted">Reset pwd</button></td>`; tbody.appendChild(tr); }); Array.from(document.querySelectorAll('.btn-edit')).forEach(b=>b.onclick=(e)=>{ loadUserToForm(e.target.dataset.uid); }); Array.from(document.querySelectorAll('.btn-delete')).forEach(b=>b.onclick=async (e)=>{ if(confirm('Supprimer ce compte ? (supprime la doc Firestore, supprimer l\\'Auth User via Console)')){ await adminDeleteUser(e.target.dataset.uid); }}); Array.from(document.querySelectorAll('.btn-reset')).forEach(b=>b.onclick=async (e)=>{ const uname=e.target.dataset.username; await adminResetPassword(uname); }); }
+
+function renderCommisAdminTable(){ const tbody=document.querySelector('#table-commis-admin tbody'); tbody.innerHTML=''; const q=(document.getElementById('search-commis-admin').value||'').toLowerCase(); const sort=document.getElementById('sort-commis-admin').value; let list=commis.slice(); if(q) list=list.filter(c => (c.titre||'').toLowerCase().includes(q) || (c.matriculePolicier||'').toLowerCase().includes(q) || (c.authorName||'').toLowerCase().includes(q)); list.sort((a,b)=> sort==='createdAt_asc' ? new Date(a.createdAt)-new Date(b.createdAt) : new Date(b.createdAt)-new Date(a.createdAt)); list.forEach(c=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${escapeHtml(c.titre||'')}</td><td>${escapeHtml(c.matriculePolicier||'')}</td><td>${escapeHtml(c.authorName||'')}</td><td><small class="muted">${tsReadable(c.createdAt||'')}</small></td><td><button data-id="${c.id}" class="btn-c-edit">Éditer</button><button data-id="${c.id}" class="btn-c-del" style="background:#ff4d4f;color:#fff">Supprimer</button></td>`; tbody.appendChild(tr); }); Array.from(document.querySelectorAll('.btn-c-edit')).forEach(b=>b.onclick=(e)=>{ loadCommisToFormAdmin(e.target.dataset.id); }); Array.from(document.querySelectorAll('.btn-c-del')).forEach(b=>b.onclick=async (e)=>{ if(confirm('Supprimer cet enregistrement ?')){ await adminDeleteCommis(e.target.dataset.id); }}); }
+
+function renderCommisForAvocat(){ const tbody=document.querySelector('#table-commis tbody'); tbody.innerHTML=''; const q=(document.getElementById('search-commis').value||'').toLowerCase(); const sort=document.getElementById('sort-commis').value; let list=commis.filter(c => c.authorUid === currentUser.uid); if(q) list=list.filter(c => (c.titre||'').toLowerCase().includes(q) || (c.matriculePolicier||'').toLowerCase().includes(q)); list.sort((a,b)=> sort==='createdAt_asc' ? new Date(a.createdAt)-new Date(b.createdAt) : new Date(b.createdAt)-new Date(a.createdAt)); list.forEach(c=>{ const tr=document.createElement('tr'); tr.innerHTML=`<td>${escapeHtml(c.titre||'')}</td><td>${escapeHtml(c.matriculePolicier||'')}</td><td>${escapeHtml((c.details||'').slice(0,80))}</td><td><small class="muted">${tsReadable(c.createdAt||'')}</small></td><td><button data-id="${c.id}" class="c-edit">Éditer</button><button data-id="${c.id}" class="c-del" style="background:#ff4d4f;color:#fff">Supprimer</button></td>`; tbody.appendChild(tr); }); Array.from(document.querySelectorAll('.c-edit')).forEach(b=>b.onclick=(e)=>{ loadCommisToForm(e.target.dataset.id); }); Array.from(document.querySelectorAll('.c-del')).forEach(b=>b.onclick=async (e)=>{ if(confirm('Supprimer cet enregistrement ?')){ await avocatDeleteCommis(e.target.dataset.id); }}); }
+
+function loadUserToForm(uidVal){ const u=users.find(x=>x.uid===uidVal); if(!u) return; document.getElementById('u-edit-id').value=u.uid; document.getElementById('u-username').value=u.username||''; document.getElementById('u-password').value=''; document.getElementById('u-name').value=u.name||''; document.getElementById('u-role').value=u.role||'avocat'; document.getElementById('u-grade').value=u.grade||''; }
+function loadCommisToFormAdmin(id){ const c=commis.find(x=>x.id===id); if(!c) return; openCommisForm(); document.getElementById('c-edit-id').value=c.id; document.getElementById('c-matricule').value=c.matriculePolicier||''; document.getElementById('c-titre').value=c.titre||''; document.getElementById('c-details').value=c.details||''; document.getElementById('commis-form-title').textContent='Éditer un commis'; }
+
+/* Event handlers */
+document.getElementById('form-login').addEventListener('submit',(e)=>{ e.preventDefault(); login(document.getElementById('login-username').value.trim(), document.getElementById('login-password').value); });
+document.getElementById('btn-logout').addEventListener('click',()=>{ logout(); });
+document.getElementById('search-users').addEventListener('input', renderUsersTable);
+document.getElementById('sort-users').addEventListener('change', renderUsersTable);
+document.getElementById('btn-create-user').addEventListener('click',()=>{ document.getElementById('form-user').reset(); document.getElementById('u-edit-id').value=''; window.scrollTo({top:0,behavior:'smooth'}); });
+document.getElementById('form-user').addEventListener('submit', adminSaveUser);
+document.getElementById('reset-user').addEventListener('click',()=>{ document.getElementById('form-user').reset(); document.getElementById('u-edit-id').value=''; });
+document.getElementById('search-commis-admin').addEventListener('input', renderCommisAdminTable);
+document.getElementById('sort-commis-admin').addEventListener('change', renderCommisAdminTable);
+document.getElementById('btn-export-csv').addEventListener('click', exportCommisCSV);
+document.getElementById('search-commis').addEventListener('input', renderCommisForAvocat);
+document.getElementById('sort-commis').addEventListener('change', renderCommisForAvocat);
+document.getElementById('btn-add-commis').addEventListener('click', openCommisForm);
+document.getElementById('form-commis').addEventListener('submit', avocatSaveCommis);
+document.getElementById('cancel-commis').addEventListener('click',()=>{ document.getElementById('card-commis-form').classList.add('hidden'); });
+document.getElementById('btn-switch-local').addEventListener('click',()=>{ useFirebase=false; initLocalData(); renderLogin(); showToast('Mode local activé (test)'); });
+
+/* Helpers */
+function escapeHtml(s){ if(!s) return ''; return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+
+/* Startup */
+(function startup(){ if(!useFirebase){ initLocalData(); renderLogin(); } })();
+</script>
+
+</body>
+</html>
